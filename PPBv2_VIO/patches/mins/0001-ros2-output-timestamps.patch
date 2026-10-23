@@ -1,0 +1,58 @@
+diff --git a/mins/src/core/ROS2Helper.h b/mins/src/core/ROS2Helper.h
+index 5145645..87f1c0e 100644
+--- a/mins/src/core/ROS2Helper.h
++++ b/mins/src/core/ROS2Helper.h
+@@ -18,6 +18,7 @@ struct PointXYZI;
+ template <class PointT> struct PointCloud;
+ } // namespace mins
+ #include <Eigen/Eigen>
++#include <cmath>
+ #include <geometry_msgs/msg/pose_stamped.hpp>
+ #include <geometry_msgs/msg/pose_with_covariance_stamped.hpp>
+ #include <geometry_msgs/msg/transform_stamped.hpp>
+@@ -59,6 +60,10 @@ struct TLIOData;
+ class ROS2Helper {
+ 
+ public:
++  /// Convert an estimator timestamp in seconds to rclcpp::Time.
++  /// rclcpp::Time(double) would implicitly treat the value as integer nanoseconds.
++  static rclcpp::Time ToRosTime(double seconds) { return rclcpp::Time(static_cast<int64_t>(std::llround(seconds * 1e9))); }
++
+   /// Collection of format converters
+   static sensor_msgs::msg::PointCloud2 ToPointcloud(const vector<Eigen::Vector3d> &feats, string frame_id);
+ 
+diff --git a/mins/src/core/ROS2Publisher.cpp b/mins/src/core/ROS2Publisher.cpp
+index af2aa30..089a4ff 100644
+--- a/mins/src/core/ROS2Publisher.cpp
++++ b/mins/src/core/ROS2Publisher.cpp
+@@ -147,7 +147,7 @@ void ROS2Publisher::publish_imu() {
+   odom.block(7, 0, 3, 1) = sys->state->imu->vel();
+   odom.block(10, 0, 3, 1) = sys->state->have_cpi(sys->state->time) ? sys->state->cpis.at(sys->state->time).w : Vector3d::Zero();
+   nav_msgs::msg::Odometry odomIinG = ROS2Helper::ToOdometry(odom);
+-  odomIinG.header.stamp = rclcpp::Time(sys->state->time);
++  odomIinG.header.stamp = ROS2Helper::ToRosTime(sys->state->time);
+   odomIinG.header.frame_id = "global";
+   odomIinG.child_frame_id = "imu";
+ 
+@@ -251,7 +251,7 @@ void ROS2Publisher::publish_state() {
+ 
+   // Create pose of IMU (note we use the bag time)
+   geometry_msgs::msg::PoseWithCovarianceStamped poseIinM = ROS2Helper::ToPoseCov(sys->state->imu->value().block(0, 0, 7, 1));
+-  poseIinM.header.stamp = rclcpp::Time(sys->state->time);
++  poseIinM.header.stamp = ROS2Helper::ToRosTime(sys->state->time);
+   //  poseIinM.header.seq = seq_imu;
+   poseIinM.header.frame_id = "global";
+ 
+diff --git a/mins/src/sim/Sim2Visualizer.cpp b/mins/src/sim/Sim2Visualizer.cpp
+index 6b81c94..7b9dfd8 100644
+--- a/mins/src/sim/Sim2Visualizer.cpp
++++ b/mins/src/sim/Sim2Visualizer.cpp
+@@ -96,7 +96,7 @@ void Sim2Visualizer::publish_groundtruth() {
+ 
+   // Create pose of IMU
+   geometry_msgs::msg::PoseStamped poseIinM;
+-  poseIinM.header.stamp = rclcpp::Time(sys->state->time);
++  poseIinM.header.stamp = ROS2Helper::ToRosTime(sys->state->time);
+   //  poseIinM.header.seq = poses_seq_gt;
+   poseIinM.header.frame_id = "global";
+   poseIinM.pose.orientation.x = state_gt(1, 0);

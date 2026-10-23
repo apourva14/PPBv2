@@ -1,0 +1,28 @@
+# MINS, camera + IMU only (VIO milestone), TUM-VI stereo (fisheye, 512x512).
+#
+# NOT VALIDATED: with this upstream config MINS diverged in 2 of 2 replays of
+# dataset-room1_512_16 (see README "Verification status"). Kept so the failure
+# stays reproducible; do not use it as a reference.
+#
+# The estimator config is the upstream MINS config/tum_vi directory from the
+# pinned install (calibration published with the dataset); only the keys below
+# are changed. MINS enables a sensor iff its config_<sensor>.yaml exists, so the
+# forbidden_files check is what guarantees camera + IMU only.
+estimator: mins
+upstream:
+  package: mins
+  config_dir: config/tum_vi
+  entry_file: config.yaml
+forbidden_files: [config_wheel.yaml, config_gps.yaml, config_lidar.yaml, config_vicon.yaml]
+overrides:
+  - {file: config_camera.yaml, section: cam0, key: topic, value: /vio/cam0/image_raw}
+  - {file: config_camera.yaml, section: cam1, key: topic, value: /vio/cam1/image_raw}
+  - {file: config_imu.yaml, section: imu, key: topic, value: /vio/imu}
+  - {file: config_system.yaml, section: sys, key: save_trajectory, value: true}
+  - {file: config_system.yaml, section: sys, key: path_trajectory, value: "{run_dir}/estimator/trajectory.txt"}
+  - {file: config_system.yaml, section: sys, key: save_timing, value: true}
+  - {file: config_system.yaml, section: sys, key: path_timing, value: "{run_dir}/estimator/timing.txt"}
+output:
+  odom_topic: /mins/imu/odom
+  # MINS fills twist.linear with the IMU velocity expressed in its world frame.
+  linear_velocity_frame: parent

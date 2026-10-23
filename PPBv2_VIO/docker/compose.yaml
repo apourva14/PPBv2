@@ -1,0 +1,32 @@
+# Run from PPBv2_VIO/:
+#   docker compose -f docker/compose.yaml build
+#   docker compose -f docker/compose.yaml run --rm vio bash
+name: ppbv2-vio
+
+services:
+  vio:
+    image: ppbv2-vio:humble
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      args:
+        BUILD_JOBS: ${BUILD_JOBS:-2}
+    volumes:
+      - ..:/ppbv2_vio
+      # Datasets and run outputs stay outside git (PPBv2_VIO/data is ignored).
+      - ${VIO_DATA_DIR:-../data}:/data
+      - ppb_ws:/ppb_ws
+    environment:
+      # Keep DDS traffic inside the container; nothing here talks to the robot.
+      ROS_LOCALHOST_ONLY: "1"
+      ROS_DOMAIN_ID: "${VIO_ROS_DOMAIN_ID:-42}"
+    ports:
+      # Foxglove bridge (only started when requested).
+      - "127.0.0.1:8765:8765"
+    shm_size: "1gb"
+    init: true
+    stdin_open: true
+    tty: true
+
+volumes:
+  ppb_ws:

@@ -1,0 +1,4 @@
+# Only what the Dockerfile COPYs is sent to the build context.
+*
+!docker/requirements-tools.lock.txt
+!patches/

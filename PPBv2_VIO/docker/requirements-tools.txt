@@ -1,0 +1,8 @@
+# Offline VIO tooling installed into /opt/vio-tools (isolated from ROS Python).
+# Top-level pins. The image installs requirements-tools.lock.txt (fully resolved);
+# regenerate the lock whenever this file changes.
+evo==1.37.1
+rosbags==0.11.5
+pillow==12.3.0
+pytest==9.1.1
+pyyaml==6.0.2

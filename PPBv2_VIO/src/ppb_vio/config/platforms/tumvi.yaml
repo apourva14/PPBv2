@@ -1,0 +1,22 @@
+# TUM-VI platform. Ground truth (OpenVINS ov_data) is given for the IMU, so base_link
+# and imu_link coincide. On PPBv2 this file is replaced by the measured
+# base_link -> imu_link mounting of the navigation camera.
+vio_odom_adapter:
+  ros__parameters:
+    world_frame: vio_world
+    base_frame: base_link
+    imu_frame: imu_link
+    imu_in_base_xyz: [0.0, 0.0, 0.0]
+    imu_in_base_quat_xyzw: [0.0, 0.0, 0.0, 1.0]
+    stale_timeout_s: 0.5
+
+vio_stream_monitor:
+  ros__parameters:
+    camera_topics: [/vio/cam0/image_raw, /vio/cam1/image_raw]
+    camera_info_topics: [/vio/cam0/camera_info, /vio/cam1/camera_info]
+    imu_topic: /vio/imu
+    camera_hz: 20.0
+    imu_hz: 200.0
+    rate_tolerance: 0.2
+    stereo_max_skew_s: 0.001
+    expected_imu_frame: imu_link

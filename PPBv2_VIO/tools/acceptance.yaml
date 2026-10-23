@@ -1,0 +1,27 @@
+# Sanity gates for dataset replays (EuRoC MAV, TUM-VI). These catch a broken pipeline (bad config,
+# wrong frames/timestamps, tracking loss); they are not performance targets.
+# Published stereo VIO results on these sequences are typically < 0.1 m APE.
+default:
+  max_ape_rmse_m: 0.30
+  max_init_latency_s: 15.0
+  min_coverage: 0.95
+  min_matched_poses: 500
+
+V1_01_easy:
+  max_ape_rmse_m: 0.15
+  max_init_latency_s: 10.0
+  min_coverage: 0.98
+  min_matched_poses: 1000
+
+MH_01_easy:
+  max_ape_rmse_m: 0.25
+  # The MAV is picked up and set down at the start; initialization waits for motion.
+  max_init_latency_s: 40.0
+  min_coverage: 0.95
+  min_matched_poses: 1000
+
+dataset-room1_512_16:
+  max_ape_rmse_m: 0.15
+  max_init_latency_s: 15.0
+  min_coverage: 0.98
+  min_matched_poses: 1000

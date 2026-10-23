@@ -1,0 +1,18 @@
+# OpenVINS reference baseline, TUM-VI stereo (fisheye, 512x512).
+# Upstream config/tum_vi from the pinned install; only the keys below change.
+estimator: openvins
+upstream:
+  package: ov_msckf
+  config_dir: config/tum_vi
+  entry_file: estimator_config.yaml
+forbidden_files: []
+overrides:
+  - {file: kalibr_imucam_chain.yaml, section: cam0, key: rostopic, value: /vio/cam0/image_raw}
+  - {file: kalibr_imucam_chain.yaml, section: cam1, key: rostopic, value: /vio/cam1/image_raw}
+  - {file: kalibr_imu_chain.yaml, section: imu0, key: rostopic, value: /vio/imu}
+  - {file: estimator_config.yaml, section: '', key: record_timing_information, value: true}
+  - {file: estimator_config.yaml, section: '', key: record_timing_filepath, value: "{run_dir}/estimator/timing.txt"}
+output:
+  odom_topic: /ov_msckf/odomimu
+  # OpenVINS fills twist.linear with the IMU velocity expressed in the IMU frame.
+  linear_velocity_frame: child
