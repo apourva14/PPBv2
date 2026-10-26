@@ -25,3 +25,14 @@ dataset-room1_512_16:
   max_init_latency_s: 15.0
   min_coverage: 0.98
   min_matched_poses: 1000
+
+# Rosario v1 (soybean field, ground robot, position-only RTK ground truth at the GPS antenna).
+# Sanity gate for VIO alone, not the fusion acceptance gate: well under the wheel-odometry
+# dead-reckoning baseline on this sequence (4.42 m). Systems in the CIFASIS VIO evaluation
+# reached ~0.5 m (crop-row spacing) at best. The robot drives from the first frame, so
+# start-up needs dynamic initialization; 15 s allows for it.
+rosario_v1_sequence02:
+  max_ape_rmse_m: 2.0
+  max_init_latency_s: 15.0
+  min_coverage: 0.95
+  min_matched_poses: 1000

@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Replay one converted dataset sequence through an estimator and score /vio/odom.
 #
-#   /ppbv2_vio/scripts/run_replay.sh <mins|openvins> <euroc|tumvi> <SEQUENCE> [--rate R] [--foxglove]
+#   /ppbv2_vio/scripts/run_replay.sh <mins|openvins> <euroc|tumvi|rosario_v1> <SEQUENCE> [--rate R] [--foxglove]
 #
-# Expects /data/<dataset>/<SEQUENCE>/ros2_bag (from tools/prepare_asl.py).
+# Expects /data/<dataset>/<SEQUENCE>/ros2_bag (tools/prepare_asl.py, prepare_rosario_v1.py).
+# Uses that folder's dataset.yaml, platform.yaml and <estimator>/ calibration when present.
 # Writes /data/runs/<UTC time>_<estimator>_<SEQUENCE>/ and exits non-zero if the
 # run fails or misses the acceptance limits in tools/acceptance.yaml.
 set -euo pipefail
@@ -21,18 +22,29 @@ while [ $# -gt 0 ]; do
 done
 
 REPO=/ppbv2_vio
-case "$DATASET" in
-  euroc) GT_DIR=euroc_mav ;;
-  tumvi) GT_DIR=tum_vi ;;
-  *) usage ;;
-esac
-# Ground truth from OpenVINS' ov_data (pinned with the OpenVINS commit); its
-# V1_01_easy orientation is re-estimated and more accurate than the original.
-GT=/opt/vio/openvins_ws/src/open_vins/ov_data/$GT_DIR/$SEQUENCE.txt
-BAG=/data/$DATASET/$SEQUENCE/ros2_bag
+DS_DIR=/data/$DATASET/$SEQUENCE
+BAG=$DS_DIR/ros2_bag
 RUN_DIR=/data/runs/$(date -u +%Y%m%dT%H%M%SZ)_${ESTIMATOR}_${SEQUENCE}
-[ -d "$BAG" ] || { echo "missing $BAG (run tools/prepare_asl.py first)" >&2; exit 1; }
-[ -f "$GT" ] || { echo "no ground truth for $SEQUENCE at $GT" >&2; exit 1; }
+[ -d "$BAG" ] || { echo "missing $BAG (run the dataset loader first)" >&2; exit 1; }
+# Ground truth: the loader's dataset.yaml, else OpenVINS' ov_data (pinned with the
+# OpenVINS commit; its V1_01_easy orientation is re-estimated and more accurate).
+if [ -f "$DS_DIR/dataset.yaml" ]; then
+  EVAL_ARGS=(--dataset "$DS_DIR/dataset.yaml")
+else
+  case "$DATASET" in
+    euroc) GT_DIR=euroc_mav ;;
+    tumvi) GT_DIR=tum_vi ;;
+    *) echo "no dataset.yaml in $DS_DIR" >&2; exit 1 ;;
+  esac
+  GT=/opt/vio/openvins_ws/src/open_vins/ov_data/$GT_DIR/$SEQUENCE.txt
+  [ -f "$GT" ] || { echo "no ground truth for $SEQUENCE at $GT" >&2; exit 1; }
+  EVAL_ARGS=(--gt "$GT" --sensor-bag "$BAG" --sequence "$SEQUENCE")
+fi
+# Per-sequence platform (base_link -> imu mounting) and estimator calibration, if generated.
+PLATFORM=$DATASET
+[ -f "$DS_DIR/platform.yaml" ] && PLATFORM=$DS_DIR/platform.yaml
+CALIB_DIR=""
+[ -d "$DS_DIR/$ESTIMATOR" ] && CALIB_DIR=$DS_DIR/$ESTIMATOR
 
 source "$REPO/scripts/vio_env.sh" "$ESTIMATOR"
 mkdir -p "$RUN_DIR"
@@ -55,7 +67,8 @@ echo "== run directory: $RUN_DIR"
 # Restore the default before exec'ing launch.
 RESTORE_SIGINT='import os, signal, sys; signal.signal(signal.SIGINT, signal.SIG_DFL); os.execvp(sys.argv[1], sys.argv[1:])'
 setsid python3 -c "$RESTORE_SIGINT" ros2 launch ppb_vio vio.launch.py \
-  estimator:="${ESTIMATOR}_${DATASET}" platform:="$DATASET" run_dir:="$LAUNCH_DIR" \
+  estimator:="${ESTIMATOR}_${DATASET}" platform:="$PLATFORM" run_dir:="$LAUNCH_DIR" \
+  calibration_dir:="$CALIB_DIR" \
   use_sim_time:=true publish_tf:=true foxglove:="$FOXGLOVE" > "$LOG" 2>&1 &
 LAUNCH_PID=$!
 UNCLEAN_STOP=0
@@ -130,7 +143,7 @@ done < <(grep -n "process has died" "$LOG")
 ln -s launch/record "$RUN_DIR/record"
 echo "== evaluating"
 /opt/vio-tools/bin/python -I "$REPO/tools/evaluate_run.py" \
-  --run-dir "$RUN_DIR" --sensor-bag "$BAG" --gt "$GT" --sequence "$SEQUENCE" \
+  --run-dir "$RUN_DIR" "${EVAL_ARGS[@]}" \
   --acceptance "$REPO/tools/acceptance.yaml" | tee "$RUN_DIR/summary.txt"
 if [ "$UNCLEAN_STOP" = 1 ]; then
   echo "FAIL: the pipeline had to be force-terminated; results above are not trusted" >&2

@@ -115,6 +115,11 @@ the GNSS `map` frame; aligning the two is a later phase.
   deliver the data on time.
 - `tools/make_demo_mcap.py`: packages a passing run into one MCAP file for
   Foxglove (images, `/vio/odom`, trail, aligned ground truth).
+- Localization design, Task 1 (2026-10-22): `tools/prepare_rosario_v1.py`
+  (Rosario v1 ROS 1 bag → ROS 2 contract bag), `dataset.yaml` ground-truth
+  descriptors, and an evaluator that scores any odometry topic or TUM file
+  (ATE at the ground-truth point, position-only RTE, NEES stub). See
+  [tools/README.md](tools/README.md).
 
 ### 4. Bugs found and fixed
 
@@ -302,7 +307,7 @@ Before replays on an 8 GB Mac: set Docker memory to **4 GB** (a run uses
 ```
 
 Each run writes `/data/runs/<time>_<estimator>_<sequence>/` with the exact
-estimator config used, the recorded output bag, logs, `vio_odom.tum`,
+estimator config used, the recorded output bag, logs, `estimate.tum`,
 `evaluation.json`, and `summary.txt`. Exit codes: 0 pass, 1 fail (accuracy, a
 crash, or an unclean shutdown), 3 invalid (inputs were degraded, so the result
 says nothing about the estimator; rerun on a less loaded machine).

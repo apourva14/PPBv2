@@ -122,3 +122,72 @@ def input_health(samples, window_start_s, window_end_s, max_degraded_fraction=0.
                          for name in REQUIRED_INPUT_STATUSES)
     degraded = under_reported or any(f > max_degraded_fraction for f in fractions.values())
     return fractions, degraded
+
+
+def relative_translation_errors(ref_xyz, est_aligned_xyz, delta_m):
+    """Translation error of consecutive, non-overlapping segments of `delta_m`
+    travelled distance (measured on the reference path).
+
+    Uses positions only, so it works with position-only ground truth (Rosario
+    v1). The estimate must already be aligned to the reference: a segment's
+    error is then ||(e_j - e_i) - (r_j - r_i)||, i.e. it includes the heading
+    error accumulated up to that segment, the quantity a row-following robot
+    cares about. Returns an array with one error per segment (may be empty).
+    """
+    ref = np.asarray(ref_xyz, dtype=float)
+    est = np.asarray(est_aligned_xyz, dtype=float)
+    if ref.shape != est.shape or ref.ndim != 2 or ref.shape[1] != 3:
+        raise ValueError('need two equally long (N, 3) position arrays')
+    if delta_m <= 0:
+        raise ValueError('delta_m must be positive')
+    dist = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(ref, axis=0), axis=1))])
+    errors, i = [], 0
+    while True:
+        j = int(np.searchsorted(dist, dist[i] + delta_m, side='left'))
+        if j >= len(ref):
+            break
+        errors.append(np.linalg.norm((est[j] - est[i]) - (ref[j] - ref[i])))
+        i = j
+    return np.array(errors)
+
+
+# 95 % quantile of the chi-square distribution with 3 degrees of freedom.
+CHI2_3DOF_95 = 7.814727903251178
+
+
+def position_nees(errors_xyz, covariances):
+    """Normalized estimation error squared of 3-D positions.
+
+    STUB for Task 1: absolute NEES after trajectory alignment is only
+    indicative (the alignment absorbs part of the error, and the covariance of
+    unobservable position/yaw grows without bound). It is reported, never
+    gated, until the covariance convention is verified per frontend (Task 2).
+
+    `errors_xyz` (N, 3) and `covariances` (N, 3, 3) must be in the same frame.
+    Samples whose covariance is not positive definite are skipped and counted.
+    Returns a dict summary (mean is 3 for a consistent estimator).
+    """
+    err = np.asarray(errors_xyz, dtype=float).reshape(-1, 3)
+    cov = np.asarray(covariances, dtype=float).reshape(-1, 3, 3)
+    values, skipped = [], 0
+    for e, c in zip(err, cov):
+        try:
+            chol = np.linalg.cholesky(0.5 * (c + c.T))
+        except np.linalg.LinAlgError:
+            skipped += 1
+            continue
+        z = np.linalg.solve(chol, e)
+        values.append(float(z @ z))
+    values = np.array(values)
+    if values.size == 0:
+        return {'status': 'unavailable', 'reason': 'no positive-definite covariance',
+                'samples': 0, 'skipped': skipped}
+    return {
+        'status': 'stub (reported, not gated)',
+        'dof': 3,
+        'samples': int(values.size),
+        'skipped': skipped,
+        'mean': float(values.mean()),
+        'median': float(np.median(values)),
+        'fraction_above_chi2_95': float(np.mean(values > CHI2_3DOF_95)),
+    }

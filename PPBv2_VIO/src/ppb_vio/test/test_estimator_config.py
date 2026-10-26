@@ -110,3 +110,31 @@ def test_shipped_profiles_are_well_formed(profile):
         # Camera + IMU only: every other MINS sensor config must be forbidden.
         assert set(p['forbidden_files']) == {
             'config_wheel.yaml', 'config_gps.yaml', 'config_lidar.yaml', 'config_vicon.yaml'}
+
+
+def test_materialize_swaps_in_generated_files_before_overrides(tmp_path):
+    src = tmp_path / 'upstream'
+    src.mkdir()
+    (src / 'config_camera.yaml').write_text(CAMERA)
+    generated = tmp_path / 'generated.yaml'
+    generated.write_text('%YAML:1.0\ncam0:\n  topic: "/generated"\n')
+    manifest = materialize(src, tmp_path / 'run', [
+        Override('config_camera.yaml', 'cam0', 'topic', '/vio/cam0/image_raw')],
+        replacements={'config_camera.yaml': generated})
+    out = (tmp_path / 'run' / 'config_camera.yaml').read_text()
+    assert out == '%YAML:1.0\ncam0:\n  topic: "/vio/cam0/image_raw"\n'
+    entry = json.loads(manifest.read_text())['replacements']['config_camera.yaml']
+    assert len(entry['sha256']) == 64
+
+
+def test_materialize_only_replaces_known_files(tmp_path):
+    src = tmp_path / 'upstream'
+    src.mkdir()
+    generated = tmp_path / 'generated.yaml'
+    generated.write_text('x: 1\n')
+    with pytest.raises(ConfigError, match='not part of the upstream'):
+        materialize(src, tmp_path / 'run', [], replacements={'config_wheel.yaml': generated})
+    (src / 'config_camera.yaml').write_text(CAMERA)
+    with pytest.raises(ConfigError, match='not found'):
+        materialize(src, tmp_path / 'run2', [],
+                    replacements={'config_camera.yaml': tmp_path / 'missing.yaml'})

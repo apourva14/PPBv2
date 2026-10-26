@@ -1,0 +1,83 @@
+\documentclass[12pt,reqno]{amsart}
+
+\usepackage{graphicx}
+
+\usepackage{amssymb}
+\usepackage{amsthm}
+\theoremstyle{plain}
+
+\newtheorem*{theorem*}{Theorem}
+%% this allows for theorems which are not automatically numbered
+
+\newtheorem{definition}{Definition}
+\newtheorem{theorem}{Theorem}
+\newtheorem{lemma}{Lemma}
+\newtheorem{example}{Example}
+\usepackage{lineno}
+
+%% The above lines are for formatting.  In general, you will not want to change these.
+
+\usepackage{enumitem}
+\setlist{nosep, leftmargin=*}
+
+\title{Weekly Report: Visual and GNSS Integrated Navigation for Field Robots}
+
+\author{Apurva Singh}
+
+\date{October 23, 2026}
+
+\begin{document}
+
+\maketitle
+
+\section*{Progress this week}
+
+Hardware is not yet available, so I started the offline VIO baseline on public field data.
+\begin{itemize}
+\item \textbf{Evaluation harness.} I wrote a scoring tool for estimated trajectories. It reports
+absolute trajectory error (ATE), relative error per 10\,m, a covariance-consistency check (NEES,
+not yet gated), start-up time and coverage. Re-scoring an earlier OpenVINS run on EuRoC
+V1\_01\_easy reproduced its 3.9\,cm ATE exactly.
+\item \textbf{Rosario dataset loader.} The Rosario dataset is stereo, IMU, wheel odometry and RTK
+recorded in a soybean field. The loader verifies checksums, converts ROS\,1 bags to ROS\,2, and
+checks units, timestamps and stereo pairing. Sequence 02 (320\,m) is converted.
+\item \textbf{Baseline.} Wheel odometry alone gives 4.42\,m ATE on sequence 02. Its heading drift
+bends the straight rows into arcs. This is the number VIO must beat.
+\item First OpenVINS runs on Rosario; 92 unit tests pass.
+\end{itemize}
+
+\section*{Plan for coming week}
+\begin{itemize}
+\item Process datasets offline with OpenVINS's serial runner instead of live replay, so no
+messages are dropped and runs repeat exactly.
+\item Tune OpenVINS one change at a time: IMU noise for vibration on soil, masking the sky and
+horizon, and outlier gating. Goal: one valid OpenVINS run on Rosario that beats wheel odometry.
+\item Then test whether Basalt, the second candidate estimator, builds on an 8\,GB arm64 laptop.
+\end{itemize}
+
+\section*{Problems}
+\textbf{Solved.}
+\begin{itemize}
+\item OpenVINS overestimated distance by $1.43\times$. Its online camera--IMU calibration
+stretched the stereo baseline from 0.120 to 0.170\,m, because flat, low-rotation driving does not
+constrain it. Holding the calibration fixed corrected the scale: about 1\,m ATE over the first
+30\,s.
+\item The robot is already moving in the first frame, so a standing-start initializer can never
+run. Motion-based initialization now starts in about 4\,s.
+\end{itemize}
+\textbf{Open.}
+\begin{itemize}
+\item OpenVINS still diverges about 45\,s in. Its accelerometer-bias estimate runs away over a
+rough, vibrating stretch of repetitive crop rows.
+\item Live replay on the laptop drops 2--4\% of IMU messages, so those runs are invalid. This is
+the reason for the switch to offline processing.
+\end{itemize}
+
+\section*{Long-term plan}
+The plan is still OK, with one change in order. The offline VIO baseline started early on
+public data. The hardware items (raw IMU and camera topics, camera--IMU calibration, rosbag
+collection) have not started and depend on the navigation camera arriving. If the camera is late,
+the ``VIO baseline demonstrated'' milestone is at risk. Developing on Rosario reduces that risk,
+because the same code and tests will run on our own recordings.
+
+\end{document}

@@ -7,6 +7,11 @@ Output topics (identical to what the robot's navigation camera will publish):
     /vio/cam0/camera_info, /vio/cam1/camera_info  sensor_msgs/CameraInfo (from sensor.yaml)
     /vio/imu                                   sensor_msgs/Imu (rad/s, m/s^2, no orientation)
 
+With --ground-truth (a TUM file tracking the body/IMU frame with orientation,
+e.g. OpenVINS' ov_data), it is copied next to the bag as ground_truth.tum and a
+dataset.yaml is written for evaluate_run.py. --descriptor-only does just that for
+an already converted bag.
+
 Every message's bag time equals its header stamp (the dataset's hardware time).
 
 Calibration comes from each camera's sensor.yaml (EuRoC) or, when the dataset
@@ -21,6 +26,9 @@ Usage:
     prepare_asl.py /data/tumvi/dataset-room1_512_16/dataset-room1_512_16 \
         /data/tumvi/dataset-room1_512_16/ros2_bag \
         --camchain /opt/vio/openvins_ws/src/open_vins/config/tum_vi/kalibr_imucam_chain.yaml
+    prepare_asl.py /data/euroc/V1_01_easy/V1_01_easy /data/euroc/V1_01_easy/ros2_bag \
+        --descriptor-only --sequence V1_01_easy \
+        --ground-truth /opt/vio/openvins_ws/src/open_vins/ov_data/euroc_mav/V1_01_easy.txt
 """
 
 import argparse
@@ -32,6 +40,7 @@ import sys
 import numpy as np
 from rosbags.rosbag2 import StoragePlugin, Writer
 from rosbags.typesys import get_typestore, Stores
+import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from ppb_vio_tools.euroc import (  # noqa: E402
@@ -178,15 +187,50 @@ def convert(asl_root, out_dir, camchain=None):
     return report
 
 
+def write_descriptor(out_dir, sequence, ground_truth):
+    """Copy the ground truth next to the bag and write dataset.yaml (EuRoC
+    conventions: ground truth tracks base_link = the body/IMU frame, with
+    orientation)."""
+    out_dir = Path(out_dir)
+    if not out_dir.is_dir():
+        raise DatasetError(f'no converted bag at {out_dir}')
+    rows = np.loadtxt(ground_truth, comments='#', ndmin=2)
+    if rows.shape[1] != 8 or np.any(np.diff(rows[:, 0]) <= 0):
+        raise DatasetError(f'{ground_truth}: not a TUM file with increasing stamps')
+    np.savetxt(out_dir.parent / 'ground_truth.tum', rows, fmt='%.9f')
+    (out_dir.parent / 'dataset.yaml').write_text(yaml.safe_dump({
+        'sequence': sequence,
+        'dataset': 'asl',
+        'sensor_bag': out_dir.name,
+        'ground_truth': 'ground_truth.tum',
+        'ground_truth_source': str(ground_truth),
+        'ground_truth_has_orientation': True,
+        'ground_truth_point_in_base': [0.0, 0.0, 0.0],
+    }, sort_keys=False))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('asl_root', help='sequence folder (containing mav0/)')
     parser.add_argument('out_dir', help='ROS 2 bag directory to create (must not exist)')
     parser.add_argument('--camchain', help='Kalibr camchain YAML (when there is no sensor.yaml)')
+    parser.add_argument('--ground-truth', help='TUM ground truth to write dataset.yaml with')
+    parser.add_argument('--sequence', help='sequence name for dataset.yaml (default: folder name)')
+    parser.add_argument('--descriptor-only', action='store_true',
+                        help='only write dataset.yaml for an existing bag (needs --ground-truth)')
     args = parser.parse_args()
+    sequence = args.sequence or Path(args.asl_root).resolve().name
     try:
+        if args.descriptor_only:
+            if not args.ground_truth:
+                parser.error('--descriptor-only needs --ground-truth')
+            write_descriptor(args.out_dir, sequence, args.ground_truth)
+            print(f'wrote {Path(args.out_dir).parent / "dataset.yaml"}')
+            return 0
         report = convert(args.asl_root, args.out_dir, args.camchain)
+        if args.ground_truth:
+            write_descriptor(args.out_dir, sequence, args.ground_truth)
     except DatasetError as exc:
         print(f'ERROR: {exc}', file=sys.stderr)
         return 1
