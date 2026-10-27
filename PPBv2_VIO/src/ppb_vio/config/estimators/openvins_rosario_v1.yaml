@@ -25,6 +25,14 @@ overrides:
   # calibration fixed; keep the online time offset (it stayed at 1-3 ms).
   - {file: estimator_config.yaml, section: '', key: calib_cam_extrinsics, value: false}
   - {file: estimator_config.yaml, section: '', key: calib_cam_intrinsics, value: false}
+  # Offline bench, sequence02 (tools/bench/variants, 2026-10-26), one change at a time on top of
+  # the stereo-calibration fix: 2 px feature noise ATE 6.25 -> 3.09 m, 300 points -> 3.31 m,
+  # both together -> 3.03 m (max error 23.8 -> 7.1 m). No effect: ZUPT (the robot never stops).
+  # Worse: IMU noise x2/x3, no SLAM features, no online time offset. Every variant still loses
+  # height in the headland U-turn (~117 s), which the vio health gate flags within ~2-3 s.
+  - {file: estimator_config.yaml, section: '', key: up_msckf_sigma_px, value: 2.0}
+  - {file: estimator_config.yaml, section: '', key: up_slam_sigma_px, value: 2.0}
+  - {file: estimator_config.yaml, section: '', key: num_pts, value: 300}
   - {file: estimator_config.yaml, section: '', key: record_timing_information, value: true}
   - {file: estimator_config.yaml, section: '', key: record_timing_filepath, value: "{run_dir}/estimator/timing.txt"}
 output:

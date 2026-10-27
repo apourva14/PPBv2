@@ -1,0 +1,36 @@
+# BENCH VARIANT no_slam_features: No SLAM features in the state (MSCKF only): long-lived features on repetitive rows are aliasing-prone.
+# OpenVINS (Task 2 baseline frontend), Rosario v1 stereo (ZED 672x376 @ 15 Hz, IMU ~142 Hz).
+# Estimator settings: upstream config/euroc_mav from the pinned install. Camera and IMU
+# calibration: generated per sequence by tools/prepare_rosario_v1.py (launch with
+# calibration_dir:=/data/rosario_v1/sequenceNN/openvins); only the keys below change.
+estimator: openvins
+upstream:
+  package: ov_msckf
+  config_dir: config/euroc_mav
+  entry_file: estimator_config.yaml
+calibration_files: [kalibr_imucam_chain.yaml, kalibr_imu_chain.yaml]
+forbidden_files: []
+overrides:
+  - {file: kalibr_imucam_chain.yaml, section: cam0, key: rostopic, value: /vio/cam0/image_raw}
+  - {file: kalibr_imucam_chain.yaml, section: cam1, key: rostopic, value: /vio/cam1/image_raw}
+  - {file: kalibr_imu_chain.yaml, section: imu0, key: rostopic, value: /vio/imu}
+  # The robot drives from the first frame and never stops until the end, so the static
+  # (standing-start) initializer cannot fire. Dynamic initialization needs rotation in its
+  # 2 s window; on sequence02 the median 2 s rotation is 1.7 deg (p90 9 deg), so the
+  # upstream 10 deg threshold would make start-up depend on luck.
+  - {file: estimator_config.yaml, section: '', key: init_dyn_use, value: true}
+  - {file: estimator_config.yaml, section: '', key: init_dyn_min_deg, value: 5.0}
+  # Planar, low-rotation ground motion does not excite camera-IMU extrinsics: with online
+  # calibration on (upstream default) the stereo baseline drifted 0.120 -> 0.170 m within
+  # 20 s on sequence02, giving a 1.43x scale error (run 20261023T130152Z). Hold the Kalibr
+  # calibration fixed; keep the online time offset (it stayed at 1-3 ms).
+  - {file: estimator_config.yaml, section: '', key: calib_cam_extrinsics, value: false}
+  - {file: estimator_config.yaml, section: '', key: calib_cam_intrinsics, value: false}
+  # variant no_slam_features: No SLAM features in the state (MSCKF only): long-lived features on repetitive rows are aliasing-prone.
+  - {file: estimator_config.yaml, section: '', key: max_slam, value: 0}
+  - {file: estimator_config.yaml, section: '', key: record_timing_information, value: true}
+  - {file: estimator_config.yaml, section: '', key: record_timing_filepath, value: "{run_dir}/estimator/timing.txt"}
+output:
+  odom_topic: /ov_msckf/odomimu
+  # OpenVINS fills twist.linear with the IMU velocity expressed in the IMU frame.
+  linear_velocity_frame: child

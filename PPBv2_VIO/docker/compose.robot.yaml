@@ -1,0 +1,24 @@
+# Overlay for the robot (Jetson AGX Orin), on top of compose.yaml:
+#   docker compose -f docker/compose.yaml -f docker/compose.robot.yaml build      # BUILD_JOBS=6
+#   docker compose -f docker/compose.yaml -f docker/compose.robot.yaml run --rm vio \
+#       /ppbv2_vio/scripts/run_robot_vio.sh --calibration /data/calibration/<ppbv2 calibration>
+#
+# Network: host networking + host IPC so the VIO sees the navigation camera driver's
+# /vio/* topics (shared-memory transport between processes on the Orin). DDS stays
+# localhost-only on its own domain: nothing reaches the Pi 5 (navigation, motors) until
+# live integration is designed and verified (spec, Task 8). Domain 42 is distinct from
+# the imaging stack (77, PPBv2_Imaging.bash) and the navigation stack's default (0).
+services:
+  vio:
+    build:
+      args:
+        BUILD_JOBS: ${BUILD_JOBS:-6}
+    network_mode: host
+    ipc: host
+    ports: !reset []
+    environment:
+      ROS_LOCALHOST_ONLY: "1"
+      ROS_DOMAIN_ID: "${VIO_ROS_DOMAIN_ID:-42}"
+    volumes:
+      # Recordings and run outputs on the Orin's data disk.
+      - ${VIO_DATA_DIR:-../data}:/data

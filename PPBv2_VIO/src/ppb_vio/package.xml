@@ -3,7 +3,7 @@
 <package format="3">
   <name>ppb_vio</name>
   <version>0.1.0</version>
-  <description>PPBv2 visual-inertial odometry integration: /vio/odom adapter, sensor stream monitor, and estimator launch for MINS / OpenVINS.</description>
+  <description>PPBv2 visual-inertial odometry integration: /vio/odom adapter, sensor stream monitor, and estimator launch for OpenVINS.</description>
   <maintainer email="yl3663@cornell.edu">Yiyuan Lin</maintainer>
   <license>MIT</license>
 

@@ -29,6 +29,7 @@ setup(
         'console_scripts': [
             'vio_odom_adapter = ppb_vio.vio_odom_adapter:main',
             'vio_stream_monitor = ppb_vio.vio_stream_monitor:main',
+            'prepare_estimator_config = ppb_vio.prepare_estimator_config:main',
         ],
     },
 )

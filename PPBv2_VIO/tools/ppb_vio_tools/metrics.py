@@ -190,4 +190,42 @@ def position_nees(errors_xyz, covariances):
         'mean': float(values.mean()),
         'median': float(np.median(values)),
         'fraction_above_chi2_95': float(np.mean(values > CHI2_3DOF_95)),
+        # Covariance multiplier that would make the mean NEES 3 (fusion: Requirement 5).
+        'suggested_covariance_scale': float(values.mean() / 3.0),
     }
+
+
+def divergence_onset(stamps_s, ref_xyz, est_xyz, window_s=1.0, tol_mps=1.0, tol_vertical_mps=0.3,
+                     persist_s=2.0):
+    """First stamp at which the estimate's motion departs from the ground truth's.
+
+    Velocities are displacement over `window_s` of the same tracked point. Only
+    quantities that a position+yaw alignment cannot change are compared, so no
+    alignment is involved and a runaway is flagged from the data, independently
+    of the health gate being tested:
+      horizontal speed   |v_xy,est| vs |v_xy,gt|   (diverges if off by > tol_mps)
+      vertical velocity  v_z,est vs v_z,gt          (> tol_vertical_mps; both frames
+                                                      are gravity-aligned)
+    Divergence = either condition holding for >= persist_s. Returns the onset or None.
+    """
+    t = np.asarray(stamps_s, dtype=float)
+    ref, est = np.asarray(ref_xyz, dtype=float), np.asarray(est_xyz, dtype=float)
+    if t.size < 3:
+        return None
+    j = np.searchsorted(t, t + window_s)
+    ok = j < t.size
+    i = np.flatnonzero(ok)
+    j = j[ok]
+    dt = (t[j] - t[i])[:, None]
+    v_est, v_ref = (est[j] - est[i]) / dt, (ref[j] - ref[i]) / dt
+    bad = ((np.abs(np.linalg.norm(v_est[:, :2], axis=1) - np.linalg.norm(v_ref[:, :2], axis=1))
+            > tol_mps) | (np.abs(v_est[:, 2] - v_ref[:, 2]) > tol_vertical_mps))
+    start = None
+    for k, b in zip(i, bad):
+        if not b:
+            start = None
+        elif start is None:
+            start = t[k]
+        elif t[k] - start >= persist_s:
+            return float(start)
+    return None

@@ -136,3 +136,29 @@ def materialize(src_dir, dst_dir, overrides, forbidden_files=(), replacements=No
         'forbidden_files_checked': list(forbidden_files),
     }, indent=2))
     return manifest
+
+
+def materialize_profile(profile, src_dir, run_dir, calibration_dir=None):
+    """Write <run_dir>/estimator_config for an estimator profile (the YAML under
+    config/estimators/, already loaded) and return the entry config path.
+
+    `src_dir` is the upstream config directory of the pinned install; overrides
+    may use "{run_dir}" in string values; `calibration_dir` holds the generated
+    files listed under the profile's `calibration_files`, if it has any.
+    Shared by the live launch file and the offline bench so both run the
+    estimator with exactly the same configuration.
+    """
+    run_dir = Path(run_dir)
+    overrides = [
+        Override(o['file'], o['section'], o['key'],
+                 o['value'].format(run_dir=run_dir) if isinstance(o['value'], str) else o['value'])
+        for o in profile['overrides']
+    ]
+    replacements = {}
+    if profile.get('calibration_files'):
+        if not calibration_dir:
+            raise ConfigError('this profile needs generated calibration files (calibration_dir)')
+        replacements = {name: Path(calibration_dir) / name for name in profile['calibration_files']}
+    cfg_dir = run_dir / 'estimator_config'
+    materialize(src_dir, cfg_dir, overrides, profile.get('forbidden_files', []), replacements)
+    return cfg_dir / profile['upstream']['entry_file']

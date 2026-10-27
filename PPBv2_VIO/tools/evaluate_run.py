@@ -20,9 +20,15 @@ Metrics:
        the ground truth has orientation.
   NEES position NEES from the odometry covariance (stub: reported, not gated).
   availability  init latency, output coverage, longest output gap.
-  input health  /vio/status from vio_stream_monitor (only for /vio/odom). If the
-       IMU or camera streams were degraded during the replay, the run is INVALID:
-       the estimator was not given the data, so its score says nothing about it.
+  input health  /vio/status from vio_stream_monitor (live replays of /vio/odom).
+       If the IMU or camera streams were degraded during the replay, the run is
+       INVALID: the estimator was not given the data, so its score says nothing
+       about it. --offline runs (bench: the estimator read the bag directly)
+       have no input stream to monitor.
+  divergence / health gate  when the estimate's speed departs from the ground
+       truth's (see metrics.divergence_onset), whether the 'ppb_vio: vio health'
+       gate latched ERROR and how late, and the ATE of the healthy part before
+       the gate fired (what a fusion layer that drops unhealthy VIO receives).
 
 Estimates are interpolated at ground-truth stamps, never across output gaps
 longer than --max-bracket.
@@ -45,8 +51,8 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from ppb_vio_tools.metrics import (  # noqa: E402
-    align_position_yaw, availability, check_acceptance, input_health, position_nees,
-    relative_translation_errors)
+    align_position_yaw, availability, check_acceptance, divergence_onset, input_health,
+    position_nees, relative_translation_errors)
 from ppb_vio_tools.trajectory import (  # noqa: E402
     associate, read_tum, reference_point, Trajectory, write_tum)
 
@@ -109,6 +115,51 @@ def read_status(bag):
     return samples
 
 
+HEALTH_STATUS = 'ppb_vio: vio health'
+
+
+def compute_budget(timing_csv, frame_period_s):
+    """Per-update processing time of an offline bench run (estimator/timing.csv) against
+    the camera frame period: the estimator keeps up live only if updates fit the period.
+    Measured on the machine that ran the bench (the Orin's cores are slower than a
+    laptop's: re-run the bench on the Orin before trusting the margin there)."""
+    t = np.loadtxt(timing_csv, delimiter=',', skiprows=1, ndmin=2)
+    if t.size == 0:
+        return None
+    p = t[:, 1]
+    return {'updates': int(p.size), 'frame_period_ms': 1000 * frame_period_s,
+            'p50_ms': float(1000 * np.median(p)), 'p95_ms': float(1000 * np.percentile(p, 95)),
+            'max_ms': float(1000 * p.max()),
+            'fraction_over_period': float(np.mean(p > frame_period_s))}
+
+
+def gate_error_time(status_samples, latched_at=()):
+    """When the vio health gate latched ERROR, in data time.
+
+    The gate reports the data stamp it latched at (status value diverged_at_s);
+    status headers carry the node clock, which differs from data time on the robot
+    and in replays of old recordings, so the header stamp is only a fallback.
+    """
+    if latched_at:
+        return min(latched_at)
+    times = [stamp for stamp, name, level in status_samples if name == HEALTH_STATUS and level == 2]
+    return min(times) if times else None
+
+
+def read_gate_latch(bag):
+    """diverged_at_s values reported by the vio health gate (data time)."""
+    out = []
+    with open_bag(bag) as reader:
+        conns = [c for c in reader.connections if c.topic == STATUS_TOPIC]
+        if not conns:
+            return out
+        for conn, _, raw in reader.messages(connections=conns):
+            for st in reader.deserialize(raw, conn.msgtype).status:
+                if st.name == HEALTH_STATUS:
+                    out += [float(kv.value) for kv in st.values if kv.key == 'diverged_at_s']
+    return out
+
+
 def load_dataset(args):
     """Ground-truth conventions: from dataset.yaml, or EuRoC-style defaults for --gt."""
     if args.dataset:
@@ -116,7 +167,8 @@ def load_dataset(args):
         d = yaml.safe_load(path.read_text())
         return {
             'sequence': d['sequence'],
-            'sensor_bag': str(path.parent / d['sensor_bag']),
+            # an explicit --sensor-bag (e.g. a stress variant) overrides the dataset's bag
+            'sensor_bag': args.sensor_bag or str(path.parent / d['sensor_bag']),
             'ground_truth': str(path.parent / d['ground_truth']),
             'has_orientation': bool(d['ground_truth_has_orientation']),
             'point_in_base': [float(v) for v in d['ground_truth_point_in_base']],
@@ -183,6 +235,8 @@ def evaluate(est, ds, max_bracket_s):
         rpe.process_data((ref_evo, est_evo))
         result['rpe_rotation_rmse_deg_per_10m'] = float(
             rpe.get_statistic(metrics.StatisticsType.rmse))
+    onset = divergence_onset(ref.stamps[idx], ref_xyz, est_xyz)
+    result['divergence_onset_s'] = onset
     if est_cov is None:
         result['nees_position'] = {'status': 'unavailable', 'reason': 'estimate has no covariance'}
     else:
@@ -201,9 +255,11 @@ def main():
     parser.add_argument('--topic', default=ODOM_TOPIC, help=f'odometry topic (default {ODOM_TOPIC})')
     parser.add_argument('--dataset', help='dataset.yaml written by a dataset loader')
     parser.add_argument('--gt', help='ground truth, TUM format, tracking base_link (no --dataset)')
-    parser.add_argument('--sensor-bag', help='bag that was replayed (no --dataset)')
+    parser.add_argument('--sensor-bag', help='bag that was replayed (default: the dataset\'s)')
     parser.add_argument('--sequence', help='key in the acceptance file (no --dataset)')
     parser.add_argument('--acceptance', help='acceptance limits YAML (omit to only report)')
+    parser.add_argument('--offline', action='store_true',
+                        help='bench run: the estimator read the bag directly (no live input stream)')
     parser.add_argument('--max-bracket', type=float, default=0.25,
                         help='longest estimate gap interpolated across, s (default 0.25)')
     args = parser.parse_args()
@@ -223,12 +279,44 @@ def main():
     result = evaluate(est, ds, args.max_bracket)
     sensor_start, sensor_end = read_bag_span(ds['sensor_bag'])
     avail = availability(est.stamps, sensor_start, sensor_end)
-    monitored = args.topic == ODOM_TOPIC and not args.estimate_tum
+    statuses = [] if args.estimate_tum else read_status(args.estimate_bag or run_dir / 'record')
+    monitored = args.topic == ODOM_TOPIC and not args.estimate_tum and not args.offline
     if monitored:
-        fractions, degraded = input_health(read_status(args.estimate_bag or run_dir / 'record'),
-                                           sensor_start + STATUS_WARMUP_S, sensor_end)
+        fractions, degraded = input_health(statuses, sensor_start + STATUS_WARMUP_S, sensor_end)
     else:
         fractions, degraded = {}, False
+
+    # Divergence vs. the health gate, times relative to the start of sensor data.
+    latched = [] if args.estimate_tum else read_gate_latch(args.estimate_bag or run_dir / 'record')
+    onset, gate = result['divergence_onset_s'], gate_error_time(statuses, latched)
+    rel = lambda t: None if t is None else round(t - sensor_start, 2)  # noqa: E731
+    health = {'divergence_onset_s': rel(onset), 'gate_error_s': rel(gate),
+              'gate_reported': any(name == HEALTH_STATUS for _, name, _ in statuses),
+              'caught': None if onset is None else (gate is not None),
+              'detection_latency_s': None if onset is None or gate is None
+              else round(gate - onset, 2),
+              'false_alarm': onset is None and gate is not None}
+    if gate is not None:
+        healthy = est.stamps < gate
+        if np.count_nonzero(healthy) >= 2:
+            try:
+                h = evaluate(Trajectory(est.stamps[healthy], est.positions[healthy],
+                                        est.quats_xyzw[healthy],
+                                        None if est.covariances is None
+                                        else est.covariances[healthy]), ds, args.max_bracket)
+                health.update({'healthy_ape_rmse_m': h['ape_rmse_m'],
+                               'healthy_nees_position_mean': h['nees_position'].get('mean'),
+                               'healthy_matched_poses': h['matched_poses'],
+                               'healthy_trajectory_length_m': h['trajectory_length_m']})
+            except RuntimeError:
+                pass
+    del result['divergence_onset_s']
+
+    timing = run_dir / 'estimator' / 'timing.csv'
+    if timing.is_file():
+        stamps = np.loadtxt(timing, delimiter=',', skiprows=1, ndmin=2)[:, 0]
+        period = float(np.median(np.diff(stamps))) if stamps.size > 1 else float('nan')
+        result['compute'] = compute_budget(timing, period)
     result.update({
         'sequence': ds['sequence'],
         'estimate_source': source,
@@ -237,6 +325,7 @@ def main():
         'odom_record_ordering': ordering,
         'ground_truth': {k: ds[k] for k in ('ground_truth', 'has_orientation', 'point_in_base')},
         'availability': avail.as_dict(),
+        'health_gate': health,
         'input_monitored': monitored,
         'input_degraded_fraction': {k: round(v, 4) for k, v in sorted(fractions.items())},
         'input_degraded': degraded,
@@ -273,6 +362,23 @@ def main():
     print(f"init latency        {a['init_latency_s']:.1f} s")
     print(f"coverage            {a['coverage']:.3f} (longest gap {a['longest_gap_s']:.2f} s, "
           f"{a['output_rate_hz']:.1f} Hz)")
+    hg = result['health_gate']
+    if hg['divergence_onset_s'] is not None:
+        caught = (f"gate ERROR at {hg['gate_error_s']:.1f} s ({hg['detection_latency_s']:+.1f} s)"
+                  if hg['caught'] else 'NOT caught by the health gate')
+        print(f"divergence          at {hg['divergence_onset_s']:.1f} s; {caught}")
+    elif hg['false_alarm']:
+        print(f"divergence          none, but the gate fired at {hg['gate_error_s']:.1f} s (false alarm)")
+    else:
+        print('divergence          none (estimate speed tracks ground truth)')
+    if 'healthy_ape_rmse_m' in hg:
+        print(f"healthy part        ATE {hg['healthy_ape_rmse_m']:.3f} m over "
+              f"{hg['healthy_trajectory_length_m']:.0f} m (before the gate fired)")
+    if result.get('compute'):
+        c = result['compute']
+        print(f"processing / update {c['p50_ms']:.1f} ms median, {c['p95_ms']:.1f} ms p95, "
+              f"{c['max_ms']:.0f} ms max (frame period {c['frame_period_ms']:.0f} ms; "
+              f"{c['fraction_over_period']:.1%} over)")
     if monitored:
         worst = max(fractions.items(), key=lambda kv: kv[1], default=('none', 1.0))
         print(f"input health        worst: {worst[0]} degraded {worst[1]:.1%} of the time")

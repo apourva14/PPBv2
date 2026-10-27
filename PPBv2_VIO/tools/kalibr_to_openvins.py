@@ -1,0 +1,123 @@
+#!/opt/vio-tools/bin/python -I
+"""PPBv2 navigation camera calibration -> OpenVINS config + ppb_vio platform file.
+
+Turns the outputs of the camera bring-up (spec, Task 5: Kalibr camera-IMU
+calibration and Allan-variance IMU noise) plus the measured IMU mounting on the
+Amiga into everything the VIO needs on the robot:
+
+    kalibr_to_openvins.py --camchain camchain-imucam.yaml --imu imu.yaml \
+        --imu-in-base-xyz X Y Z --imu-in-base-rpy-deg R P Y --camera-hz 30 \
+        --out /data/calibration/ppbv2_<date>
+
+    <out>/openvins/kalibr_imucam_chain.yaml, kalibr_imu_chain.yaml   (calibration_dir for the
+                                                                      openvins_ppbv2 profile)
+    <out>/platform.yaml              adapter (base_link -> imu_link, Amiga health limits) + monitor
+    <out>/calibration_report.json    inputs (sha256), stereo consistency, warnings
+
+Checks carried over from the dataset work: cam1's extrinsic is chained from the
+stereo calibration (T_cn_cnm1) and the disagreement with Kalibr's two camera-IMU
+extrinsics is reported (Rosario v1: 0.29 deg made stereo VIO 11 % short); both
+cameras must share one time shift (hardware-synchronized stereo).
+
+Calibrations are versioned: the output folder must not exist.
+"""
+
+import argparse
+import hashlib
+import json
+from pathlib import Path
+import sys
+
+import numpy as np
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from ppb_vio_tools.euroc import DatasetError  # noqa: E402
+from ppb_vio_tools.rig import (  # noqa: E402
+    quat_from_rpy_deg, read_kalibr_imu, read_kalibr_rig, STEREO_DISCREPANCY_WARN_DEG,
+    write_rig_outputs)
+
+# Divergence gate limits for the Amiga (ppb_vio.lib.vio_health). The navigation
+# stack caps commands at 2.0 m/s and 1.5 rad/s (PPBv2_Navigation bringup.yaml and
+# the Feather M4 firmware); rows are driven at 1.0 m/s.
+AMIGA_HEALTH_LIMITS = {
+    'max_speed_mps': 2.5,            # 2.0 m/s command cap + margin for slip and estimate noise
+    'max_vertical_speed_mps': 0.5,   # field robot
+    'max_accel_mps2': 4.0,           # 0 -> 2 m/s in 0.5 s is already beyond the platform
+}
+
+
+def sha256(path):
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__,
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument('--camchain', required=True, help='Kalibr camchain-imucam YAML (stereo)')
+    parser.add_argument('--imu', required=True, help='Kalibr / allan_variance_ros IMU noise YAML')
+    parser.add_argument('--imu-in-base-xyz', type=float, nargs=3, required=True, metavar=('X', 'Y', 'Z'),
+                        help='measured IMU position in base_link, m')
+    rot = parser.add_mutually_exclusive_group(required=True)
+    rot.add_argument('--imu-in-base-rpy-deg', type=float, nargs=3, metavar=('R', 'P', 'Y'),
+                     help='IMU orientation in base_link (fixed-axis roll, pitch, yaw), deg')
+    rot.add_argument('--imu-in-base-quat', type=float, nargs=4, metavar=('X', 'Y', 'Z', 'W'))
+    parser.add_argument('--camera-hz', type=float, required=True, help='stereo frame rate')
+    parser.add_argument('--imu-hz', type=float, help='IMU rate (default: update_rate in --imu)')
+    parser.add_argument('--stereo-source', choices=('camchain', 'imu'), default='camchain')
+    parser.add_argument('--out', required=True, help='new calibration folder')
+    args = parser.parse_args()
+
+    out = Path(args.out)
+    if out.exists():
+        print(f'ERROR: {out} exists; calibrations are versioned, use a new folder', file=sys.stderr)
+        return 1
+    try:
+        noise, rate = read_kalibr_imu(args.imu)
+        imu_hz = args.imu_hz or rate
+        if not imu_hz:
+            raise DatasetError('IMU rate unknown: pass --imu-hz (no update_rate in --imu)')
+        quat = (np.asarray(args.imu_in_base_quat) if args.imu_in_base_quat
+                else quat_from_rpy_deg(*args.imu_in_base_rpy_deg))
+        rig = read_kalibr_rig(args.camchain, noise, imu_hz, args.camera_hz, args.imu_in_base_xyz,
+                              quat / np.linalg.norm(quat), args.stereo_source)
+    except DatasetError as exc:
+        print(f'ERROR: {exc}', file=sys.stderr)
+        return 1
+
+    warnings = []
+    if rig.stereo_discrepancy_deg > STEREO_DISCREPANCY_WARN_DEG:
+        warnings.append(f'camera-IMU extrinsics disagree with the stereo extrinsic by '
+                        f'{rig.stereo_discrepancy_deg:.3f} deg; using '
+                        f'{"T_cn_cnm1 (chained)" if args.stereo_source == "camchain" else "the file"} '
+                        'for cam1. Consider re-running the Kalibr camera-IMU calibration.')
+    baseline_mm = float(np.linalg.norm(
+        rig.imu_to_camera_pose(1)[0] - rig.imu_to_camera_pose(0)[0]) * 1000)
+    out.mkdir(parents=True)
+    paths = write_rig_outputs(
+        rig, out,
+        f'PPBv2 navigation camera platform, generated by kalibr_to_openvins.py\n'
+        f'from {Path(args.camchain).name} and {Path(args.imu).name}.',
+        AMIGA_HEALTH_LIMITS)
+    report = {
+        'inputs': {'camchain': {'path': str(args.camchain), 'sha256': sha256(args.camchain)},
+                   'imu': {'path': str(args.imu), 'sha256': sha256(args.imu)}},
+        'imu_in_base_xyz': list(rig.imu_in_base_xyz),
+        'imu_in_base_quat_xyzw': list(rig.imu_in_base_quat_xyzw),
+        'camera_hz': rig.camera_hz, 'imu_hz': rig.imu_hz, 'imu_noise': rig.imu_noise,
+        'timeshift_cam_imu_s': rig.timeshift_cam_imu,
+        'stereo_baseline_mm': baseline_mm,
+        'stereo_source': rig.stereo_source,
+        'stereo_discrepancy_deg': rig.stereo_discrepancy_deg,
+        'health_limits': AMIGA_HEALTH_LIMITS,
+        'outputs': paths,
+        'warnings': warnings,
+    }
+    (out / 'calibration_report.json').write_text(json.dumps(report, indent=2))
+    print(json.dumps(report, indent=2))
+    for w in warnings:
+        print(f'WARNING: {w}', file=sys.stderr)
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

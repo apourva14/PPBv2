@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Replay one converted dataset sequence through an estimator and score /vio/odom.
 #
-#   /ppbv2_vio/scripts/run_replay.sh <mins|openvins> <euroc|tumvi|rosario_v1> <SEQUENCE> [--rate R] [--foxglove]
+#   /ppbv2_vio/scripts/run_replay.sh <openvins> <euroc|tumvi|rosario_v1> <SEQUENCE> [--rate R] [--foxglove]
 #
 # Expects /data/<dataset>/<SEQUENCE>/ros2_bag (tools/prepare_asl.py, prepare_rosario_v1.py).
 # Uses that folder's dataset.yaml, platform.yaml and <estimator>/ calibration when present.
@@ -43,8 +43,9 @@ fi
 # Per-sequence platform (base_link -> imu mounting) and estimator calibration, if generated.
 PLATFORM=$DATASET
 [ -f "$DS_DIR/platform.yaml" ] && PLATFORM=$DS_DIR/platform.yaml
-CALIB_DIR=""
-[ -d "$DS_DIR/$ESTIMATOR" ] && CALIB_DIR=$DS_DIR/$ESTIMATOR
+# ros2 launch rejects an empty "name:=" argument, so pass it only when there is one.
+CALIB_ARGS=()
+[ -d "$DS_DIR/$ESTIMATOR" ] && CALIB_ARGS=(calibration_dir:="$DS_DIR/$ESTIMATOR")
 
 source "$REPO/scripts/vio_env.sh" "$ESTIMATOR"
 mkdir -p "$RUN_DIR"
@@ -68,7 +69,7 @@ echo "== run directory: $RUN_DIR"
 RESTORE_SIGINT='import os, signal, sys; signal.signal(signal.SIGINT, signal.SIG_DFL); os.execvp(sys.argv[1], sys.argv[1:])'
 setsid python3 -c "$RESTORE_SIGINT" ros2 launch ppb_vio vio.launch.py \
   estimator:="${ESTIMATOR}_${DATASET}" platform:="$PLATFORM" run_dir:="$LAUNCH_DIR" \
-  calibration_dir:="$CALIB_DIR" \
+  "${CALIB_ARGS[@]}" \
   use_sim_time:=true publish_tf:=true foxglove:="$FOXGLOVE" > "$LOG" 2>&1 &
 LAUNCH_PID=$!
 UNCLEAN_STOP=0
@@ -88,15 +89,6 @@ stop_launch() {
 }
 trap stop_launch EXIT
 
-# Guard against MINS subscribing to sensor_msgs/CompressedImage (upstream reads
-# an uninitialized flag; fixed by patches/mins/0002, checked here regardless).
-check_raw_image_subscription() {
-  if grep -q "subscribing to cam (.*compressed)" "$LOG"; then
-    echo "estimator subscribed to compressed images, but /vio/* carries raw images; see $LOG" >&2
-    exit 1
-  fi
-}
-
 # Ready = every input topic has both of its subscribers (estimator + stream
 # monitor) and the recorder has subscribed to /vio/odom. Starting the replay
 # earlier would silently drop the first seconds the estimator initializes from.
@@ -114,7 +106,6 @@ for i in $(seq 120); do
   sleep 0.5
 done
 
-check_raw_image_subscription
 echo "== replaying $SEQUENCE at ${RATE}x"
 ros2 bag play "$BAG" --clock 200 --rate "$RATE" > "$RUN_DIR/play.log" 2>&1 \
   || { echo "ros2 bag play failed; see $RUN_DIR/play.log" >&2; exit 1; }
@@ -122,7 +113,6 @@ kill -0 "$LAUNCH_PID" 2>/dev/null || { echo "pipeline died during replay; see $L
 sleep 3   # let the estimator drain its queue and the recorder flush
 stop_launch
 trap - EXIT
-check_raw_image_subscription
 # Any process dying before shutdown starts is fatal, as is any of our own nodes
 # or the recorder dying at any time. An estimator crash *after* SIGINT is only a
 # warning: OpenVINS segfaults on shutdown under Humble, and by then every output

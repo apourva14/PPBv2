@@ -23,6 +23,7 @@ from ppb_vio.lib.odom_conversion import (
 )
 from ppb_vio.lib.time_utils import NS_PER_S, stamp_to_ns
 from ppb_vio.lib.transforms import rot_to_quat
+from ppb_vio.lib.vio_health import HealthLimits, VioHealthGate
 
 FORBIDDEN_OUTPUT_TOPICS = ('/robot/odom', '/cmd_vel', '/cmd_vel_nav', '/cmd_vel_out',
                            '/cmd_vel_stop', '/cmd_vel_key')
@@ -52,6 +53,13 @@ class VioOdomAdapter(Node):
         self.declare_parameter('publish_extrinsic_tf', True)
         self.declare_parameter('stale_timeout_s', 0.5)
         self.declare_parameter('status_period_s', 1.0)
+        # Multiplies the published pose and twist covariance. OpenVINS is overconfident on
+        # field data (position NEES ~44 vs 3 on Rosario); calibrate per platform from
+        # recordings (evaluate_run.py reports a suggested scale). 1.0 = estimator as is.
+        self.declare_parameter('covariance_scale', 1.0)
+        # Plausibility limits of the divergence gate (ppb_vio.lib.vio_health).
+        for name, default in HealthLimits().__dict__.items():
+            self.declare_parameter(f'health_{name}', default)
 
         p = self.get_parameter
         self.input_topic = p('input_topic').value
@@ -62,6 +70,9 @@ class VioOdomAdapter(Node):
         self.imu_frame = p('imu_frame').value
         self.publish_tf = bool(p('publish_tf').value)
         self.stale_ns = int(float(p('stale_timeout_s').value) * NS_PER_S)
+        self.covariance_scale = float(p('covariance_scale').value)
+        if not self.covariance_scale > 0:
+            raise ValueError('covariance_scale must be positive')
 
         if not self.input_topic:
             raise ValueError('parameter input_topic must be set')
@@ -73,6 +84,8 @@ class VioOdomAdapter(Node):
         if self.input_topic == self.output_topic:
             raise ValueError('input_topic and output_topic must differ')
 
+        self.health = VioHealthGate(HealthLimits(**{
+            name: float(p(f'health_{name}').value) for name in HealthLimits().__dict__}))
         self.extrinsic = Extrinsic.from_xyz_quat(
             list(p('imu_in_base_xyz').value), list(p('imu_in_base_quat_xyzw').value))
 
@@ -158,10 +171,11 @@ class VioOdomAdapter(Node):
          out.twist.twist.linear.z) = base.linear_velocity.tolist()
         (out.twist.twist.angular.x, out.twist.twist.angular.y,
          out.twist.twist.angular.z) = base.angular_velocity.tolist()
-        out.pose.covariance = base.pose_covariance.reshape(-1).tolist()
-        out.twist.covariance = base.twist_covariance.reshape(-1).tolist()
+        out.pose.covariance = (self.covariance_scale * base.pose_covariance).reshape(-1).tolist()
+        out.twist.covariance = (self.covariance_scale * base.twist_covariance).reshape(-1).tolist()
         self.odom_pub.publish(out)
         self.counts['published'] += 1
+        self.health.update(stamp_ns / NS_PER_S, base.position, base.pose_covariance)
 
         if self.tf_broadcaster is not None:
             t = TransformStamped()
@@ -200,9 +214,20 @@ class VioOdomAdapter(Node):
         if self.last_stamp_ns is not None:
             status.values.append(KeyValue(key='last_stamp_ns', value=str(self.last_stamp_ns)))
 
+        health = DiagnosticStatus()
+        health.name = 'ppb_vio: vio health'
+        health.hardware_id = self.input_topic
+        h = self.health.state
+        # `level` is a ROS `byte`: rclpy wants a 1-byte bytes object, not an int.
+        health.level = bytes([h.level]) if self.counts['published'] else DiagnosticStatus.STALE
+        health.message = h.message
+        health.values = [KeyValue(key=f'violations_{k}', value=str(v)) for k, v in h.reasons.items()]
+        if h.latched_at_s is not None:
+            health.values.append(KeyValue(key='diverged_at_s', value=f'{h.latched_at_s:.3f}'))
+
         array = DiagnosticArray()
         array.header.stamp = self.get_clock().now().to_msg()
-        array.status = [status]
+        array.status = [status, health]
         self.status_pub.publish(array)
 
 

@@ -8,6 +8,20 @@ cd PPBv2_VIO
 docker compose -f docker/compose.yaml run --rm vio bash      # PPBv2_VIO -> /ppbv2_vio, data/ -> /data
 ```
 
+## Robot (PPBv2 Amiga)
+
+| Tool | Does |
+|---|---|
+| `kalibr_to_openvins.py` | Kalibr camchain-imucam + Allan-variance IMU YAML + measured IMU mounting -> versioned calibration folder: `openvins/` (calibration_dir for the `openvins_ppbv2` profile), `platform.yaml` (Amiga health limits, `covariance_scale`), `calibration_report.json`. Checks stereo hardware sync and stereo-calibration consistency |
+| `prepare_ppbv2.py` | robot recording (`/vio/*` + `/robot/odom` RTK pose) + calibration folder -> bench dataset `/data/ppbv2/<name>` (RTK = ground truth, position-only). Refuses missing topics, unsynchronized stereo, wrong image size, non-SI IMU, rates off the calibration, non-overlapping clocks |
+
+```bash
+tools/kalibr_to_openvins.py --camchain camchain-imucam.yaml --imu imu.yaml \
+    --imu-in-base-xyz X Y Z --imu-in-base-rpy-deg R P Y --camera-hz 30 --out /data/calibration/ppbv2_<date>
+tools/prepare_ppbv2.py /data/recordings/<bag> /data/calibration/ppbv2_<date> /data/ppbv2/<name>
+/ppbv2_vio/scripts/run_bench.sh openvins ppbv2 <name>
+```
+
 ## Dataset loaders
 
 Each loader writes a ROS 2 bag on the PPBv2 VIO topic contract (`/vio/cam{0,1}/image_raw`
@@ -55,6 +69,13 @@ What the Rosario v1 loader does and checks:
 - `/tf_static` from the calibration file: `base_link -> imu_link -> cam{0,1}_optical_frame`,
   `base_link -> gps`. `rotation_imu_baselink` is R_base_imu (agrees with the bag's own
   tf_static and with gravity).
+- **Stereo calibration fix:** the published file's camera–IMU extrinsics disagree with its own
+  stereo extrinsic `T_cn_cnm1` by 0.27° (one Kalibr calibration shared by all six sequences;
+  ~1.6 px disparity bias, stereo VIO 11 % short). cam1's extrinsic is chained from the stereo
+  calibration (`--stereo-source camchain`, default); `--stereo-source imu` reproduces the file.
+  The discrepancy is recorded in `conversion_report.json`.
+- Writes `platform.yaml` and `openvins/` calibration files for the estimator
+  (`--configs-only` regenerates just those).
 - Ground truth is the **GPS antenna position** (no orientation). `dataset.yaml` records the
   antenna's position in `base_link`; the evaluator scores the estimate at that point.
 - Refuses on missing/mistyped topics, IMU or camera stamps going backwards, or > 1 % unpaired
@@ -83,10 +104,24 @@ Outputs `estimate.tum` and `evaluation.json` in `--run-dir`.
 | RTE | RMSE of translation error over consecutive 10 m segments of the aligned estimate (positions only); rotation error per 10 m only if the ground truth has orientation |
 | NEES | position NEES from `/vio/odom` covariance (position block mapped to the ground-truth point). **Stub: reported, never gated**, until Task 2 verifies each frontend's covariance |
 | availability | init latency, coverage, longest output gap |
-| input health | `/vio/status` stream diagnostics (only when scoring `/vio/odom`); degraded inputs make the run INVALID (exit 3) |
+| input health | `/vio/status` stream diagnostics (live replays of `/vio/odom`); degraded inputs make the run INVALID (exit 3). Not applicable with `--offline` (bench) |
+| divergence | onset from ground truth: horizontal speed off by > 1 m/s, or vertical velocity off by > 0.3 m/s, for 2 s (alignment-free, independent of the gate) |
+| health gate | when `ppb_vio: vio health` latched ERROR, detection latency vs the onset, false alarms, and ATE / NEES of the healthy part before it fired |
 
 Estimates are interpolated at ground-truth stamps, never across a gap longer than
 `--max-bracket` (0.25 s).
+
+## Bench tools
+
+| Tool | Does |
+|---|---|
+| `offline_adapter.py` | estimator odometry (IMU frame) -> `/vio/odom` + `/vio/status`, same library code as the live `vio_odom_adapter` (conversion + health gate) |
+| `stress_bag.py` | seeded stressed copy of a contract bag: `--drop-frames`, `--blackout T0:T1`, `--jitter-ms`, `--imu-drop`, `--start` |
+| `bench_summary.py` | run folders -> A/B table (`.md` + `.csv`) |
+| `plot_trajectories.py` | top views + error vs distance + table, one column per dataset |
+| `bench/variants/` | OpenVINS profile variants, one documented change each |
+
+Driven by `scripts/run_bench.sh` (one run) and `scripts/run_stress_suite.sh`.
 
 ## Tests
 

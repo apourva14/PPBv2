@@ -1,12 +1,9 @@
 # PPBv2 VIO development / replay image.
 #
 # ROS 2 Humble on Ubuntu 22.04 (same distro as the Jetson AGX Orin).
-# Builds two estimators into SEPARATE workspaces (OpenVINS first, so that
-# changing a MINS patch does not rebuild OpenVINS), because MINS vendors its own
-# copy of OpenVINS' ov_core and the package names collide:
-#   /opt/vio/mins_ws      MINS (primary estimator), with PPBv2 patches applied
-#   /opt/vio/openvins_ws  OpenVINS (reference / debug baseline)
-# Never source both workspaces in the same shell; scripts/vio_env.sh picks one.
+# Each VIO frontend is built into its own workspace so frontends never share an
+# overlay (scripts/vio_env.sh sources exactly one):
+#   /opt/vio/openvins_ws  OpenVINS (Stage 1 baseline frontend)
 #
 # Offline evaluation tools (evo, rosbags) live in /opt/vio-tools, a virtualenv
 # isolated from the ROS system Python.
@@ -17,8 +14,6 @@
 FROM ros:humble-perception-jammy@sha256:de170d8905daf457ab2ab4f1806b8031412f16d7bef1db1cdea704e5d6626447
 
 # Upstream estimator sources, pinned to exact commits.
-ARG MINS_REPO=https://github.com/rpng/MINS.git
-ARG MINS_COMMIT=e245da649c5eba5f7dfdade2df8731f2ed676590
 ARG OPENVINS_REPO=https://github.com/rpng/open_vins.git
 ARG OPENVINS_COMMIT=69488123ed9362dd44b6f28e7f4680abbff1442b
 # Parallelism: keep low on 8 GB machines; raise on the Orin (e.g. BUILD_JOBS=6).
@@ -54,7 +49,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # ---------------------------------------------------------------------------
-# OpenVINS (reference baseline). ov_eval is skipped; evo is used instead.
+# OpenVINS (baseline frontend). ov_eval is skipped; evo is used instead.
 # ---------------------------------------------------------------------------
 RUN mkdir -p /opt/vio/openvins_ws/src \
     && git clone --quiet "${OPENVINS_REPO}" /opt/vio/openvins_ws/src/open_vins \
@@ -69,33 +64,8 @@ RUN source /opt/ros/humble/setup.bash \
          --event-handlers console_direct- --cmake-args -DCMAKE_BUILD_TYPE=Release \
     && rm -rf build log
 
-# ---------------------------------------------------------------------------
-# MINS (camera + IMU first; wheel / GNSS enabled later through config only)
-# ---------------------------------------------------------------------------
-COPY patches/mins /opt/vio/patches/mins
-RUN mkdir -p /opt/vio/mins_ws/src \
-    && git clone --quiet "${MINS_REPO}" /opt/vio/mins_ws/src/MINS \
-    && cd /opt/vio/mins_ws/src/MINS \
-    && git checkout --quiet "${MINS_COMMIT}" \
-    && test "$(git rev-parse HEAD)" = "${MINS_COMMIT}" \
-    && for p in /opt/vio/patches/mins/*.patch; do git apply --verbose "$p"; done
-
-# Mirrors upstream build_ros2.sh (thirdparty -> bundled OpenVINS -> mins),
-# with Release flags and bounded parallelism. mins_eval is not needed.
-RUN source /opt/ros/humble/setup.bash \
-    && cd /opt/vio/mins_ws \
-    && export MAKEFLAGS="-j${BUILD_JOBS}" \
-    && COLCON_ARGS=(--parallel-workers 1 --event-handlers console_direct- --cmake-args -DCMAKE_BUILD_TYPE=Release) \
-    && SRC=/opt/vio/mins_ws/src/MINS \
-    && THIRDPARTY_PKGS=$(find "$SRC/thirdparty" -mindepth 1 -maxdepth 1 -type d -exec test -f '{}/package.xml' \; -print) \
-    && if [ -n "$THIRDPARTY_PKGS" ]; then colcon build --paths $THIRDPARTY_PKGS "${COLCON_ARGS[@]}"; source install/setup.bash; fi \
-    && colcon build --paths "$SRC"/thirdparty/open_vins/* "${COLCON_ARGS[@]}" \
-    && source install/setup.bash \
-    && colcon build --paths "$SRC/mins" "$SRC/mins_data" "${COLCON_ARGS[@]}" \
-    && rm -rf build log
-
 # Offline evaluation tooling, isolated from ROS' Python packages. Installed after
-# the estimator builds so changing a tool pin does not rebuild MINS/OpenVINS.
+# the estimator builds so changing a tool pin does not rebuild an estimator.
 COPY docker/requirements-tools.lock.txt /tmp/requirements-tools.lock.txt
 RUN python3 -m venv /opt/vio-tools \
     && /opt/vio-tools/bin/python -I -m pip install --no-cache-dir --upgrade pip==24.2 \
@@ -105,9 +75,7 @@ RUN python3 -m venv /opt/vio-tools \
     && rm /tmp/requirements-tools.lock.txt
 
 # Record exactly what was built.
-RUN { echo "mins ${MINS_COMMIT}"; echo "open_vins ${OPENVINS_COMMIT}"; \
-      echo "mins_patches $(cd /opt/vio/patches/mins && sha256sum *.patch | tr '\n' ' ')"; } \
-    > /opt/vio/VERSIONS
+RUN echo "open_vins ${OPENVINS_COMMIT}" > /opt/vio/VERSIONS
 
 # Non-root user for day-to-day work. PPBv2_VIO is bind-mounted at /ppbv2_vio.
 RUN useradd --create-home --shell /bin/bash --uid 1000 vio \

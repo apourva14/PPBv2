@@ -1,15 +1,14 @@
 # Source (do not execute) to set up a shell for one estimator:
-#     source /ppbv2_vio/scripts/vio_env.sh mins       # or: openvins
+#     source /ppbv2_vio/scripts/vio_env.sh openvins
 #
-# MINS and OpenVINS ship packages with the same names (ov_core, ...), so the two
-# workspaces must never be overlaid in one shell.
+# Each VIO frontend has its own workspace (docker/Dockerfile); never overlay two
+# in one shell.
 
 _vio_estimator="${1:-}"
 case "$_vio_estimator" in
-  mins)     _vio_ws=/opt/vio/mins_ws/install ;;
   openvins) _vio_ws=/opt/vio/openvins_ws/install ;;
   *)
-    echo "usage: source vio_env.sh <mins|openvins>" >&2
+    echo "usage: source vio_env.sh <openvins>" >&2
     return 2 2>/dev/null || exit 2 ;;
 esac
 
@@ -26,6 +25,10 @@ if [ -f /ppb_ws/install/setup.bash ]; then
   source /ppb_ws/install/setup.bash
 else
   echo "warning: ppb_vio is not built yet; run /ppbv2_vio/scripts/build_ppb_vio.sh" >&2
+fi
+# Offline bench runner for this frontend (e.g. /ppb_ws/install_openvins).
+if [ -f "/ppb_ws/install_$_vio_estimator/setup.bash" ]; then
+  source "/ppb_ws/install_$_vio_estimator/setup.bash"
 fi
 [ "$_vio_had_u" = 1 ] && set -u
 
