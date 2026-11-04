@@ -619,3 +619,16 @@ def test_prepare_ppbv2_refuses_image_size_other_than_calibration(tmp_path):
     rec = _robot_recording(tmp_path / 'rec', size_override=(640, 480))
     with pytest.raises(DatasetError, match='image size'):
         prepare_ppbv2.prepare(rec, _robot_calibration(tmp_path), tmp_path / 'out')
+
+
+def test_continuity_flags_only_physical_jumps():
+    from ppb_vio_tools.metrics import continuity
+    t = np.arange(0, 10, 0.02)
+    p = np.column_stack([1.0 * t, np.zeros_like(t), np.zeros_like(t)])
+    assert continuity(t, p)['jumps'] == 0
+    p[300:, 1] += 0.8                                    # 0.8 m sideways in one 20 ms step
+    c = continuity(t, p)
+    assert c['jumps'] == 1 and abs(c['first_jump_s'] - t[300]) < 1e-9 and c['max_step_m'] > 0.8
+    tiny = np.column_stack([t, np.zeros_like(t), np.zeros_like(t)])
+    tiny[100, 0] += 0.05                                 # sub-threshold noise is no jump
+    assert continuity(t, tiny)['jumps'] == 0

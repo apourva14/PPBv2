@@ -51,8 +51,8 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from ppb_vio_tools.metrics import (  # noqa: E402
-    align_position_yaw, availability, check_acceptance, divergence_onset, input_health,
-    position_nees, relative_translation_errors)
+    align_position_yaw, availability, check_acceptance, continuity, divergence_onset,
+    input_health, position_nees, relative_translation_errors)
 from ppb_vio_tools.trajectory import (  # noqa: E402
     associate, read_tum, reference_point, Trajectory, write_tum)
 
@@ -235,6 +235,7 @@ def evaluate(est, ds, max_bracket_s):
         rpe.process_data((ref_evo, est_evo))
         result['rpe_rotation_rmse_deg_per_10m'] = float(
             rpe.get_statistic(metrics.StatisticsType.rmse))
+    result['continuity'] = continuity(est.stamps, est.positions)
     onset = divergence_onset(ref.stamps[idx], ref_xyz, est_xyz)
     result['divergence_onset_s'] = onset
     if est_cov is None:
@@ -374,6 +375,9 @@ def main():
     if 'healthy_ape_rmse_m' in hg:
         print(f"healthy part        ATE {hg['healthy_ape_rmse_m']:.3f} m over "
               f"{hg['healthy_trajectory_length_m']:.0f} m (before the gate fired)")
+    cont = result['continuity']
+    print(f"continuity          {cont['jumps']} jumps (largest step beyond platform motion "
+          f"{max(cont['max_excess_m'], 0):.2f} m; largest step {cont['max_step_m']:.2f} m)")
     if result.get('compute'):
         c = result['compute']
         print(f"processing / update {c['p50_ms']:.1f} ms median, {c['p95_ms']:.1f} ms p95, "

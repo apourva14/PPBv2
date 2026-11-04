@@ -1,0 +1,10 @@
+# Variant: fuse VIO velocity (/vio/odom twist, in base_link) instead of differential pose.
+# Differential mode turns consecutive poses into a velocity whose covariance is
+# (P_k + P_k-1) * dt with P the *absolute* pose covariance (robot_localization 3.5.4,
+# ros_filter.cpp preparePose 7e), which grows without bound for VIO, so VIO's weight
+# fades with distance. The twist covariance does not grow with distance.
+ekf_local:
+  ros__parameters:
+    odom1_differential: false
+    odom1_config: [false, false, false,  false, false, false,  true, true, false,
+                   false, false, true,  false, false, false]

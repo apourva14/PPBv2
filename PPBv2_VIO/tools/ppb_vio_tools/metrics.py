@@ -229,3 +229,21 @@ def divergence_onset(stamps_s, ref_xyz, est_xyz, window_s=1.0, tol_mps=1.0, tol_
         elif t[k] - start >= persist_s:
             return float(start)
     return None
+
+
+def continuity(stamps_s, positions, max_speed_mps=2.5, min_excess_m=0.1):
+    """Discontinuities in an estimate's own output (spec: "continuous, smooth odom ->
+    base_link that never jumps"). A jump is a step between consecutive outputs that
+    exceeds what the platform could travel in that interval (max_speed_mps * dt) by
+    more than `min_excess_m`, so a gap in the output followed by normal motion is not
+    a jump. Positions are those of one tracked point; no ground truth needed."""
+    t = np.asarray(stamps_s, dtype=float)
+    p = np.asarray(positions, dtype=float)
+    if t.size < 2:
+        return {'max_step_m': 0.0, 'max_excess_m': 0.0, 'jumps': 0, 'first_jump_s': None}
+    step = np.linalg.norm(np.diff(p, axis=0), axis=1)
+    excess = step - max_speed_mps * np.diff(t)
+    jumps = excess > min_excess_m
+    return {'max_step_m': float(step.max()), 'max_excess_m': float(excess.max()),
+            'jumps': int(jumps.sum()),
+            'first_jump_s': float(t[1:][jumps][0]) if jumps.any() else None}

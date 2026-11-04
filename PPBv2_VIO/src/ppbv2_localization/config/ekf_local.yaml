@@ -1,0 +1,56 @@
+# ekf_local: continuous odom -> base_link (spec, "Concrete robot_localization configuration").
+# State order of every *_config: [x, y, z, roll, pitch, yaw, vx, vy, vz, vroll, vpitch, vyaw,
+# ax, ay, az].
+#
+# Differences from the spec's configuration, each measured on Rosario v1 seq02 with
+# scripts/run_fusion.sh (2026-10-27; the spec's original is config/variants/spec_original.yaml):
+#  1. Wheel odometry also fuses vy = 0 (nonholonomic: a wheeled robot does not slide).
+#     Without it nothing observes lateral velocity once VIO is dropped, and the error
+#     picked up from a diverging VIO integrates forever: ATE 173 m -> 4.5 m, 1108 -> 0 jumps.
+#  2. VIO enters through the vio_gate (/vio/odom_gated; spec Requirement 4), with a
+#     Mahalanobis rejection threshold on top (defence in depth; same accuracy, smaller
+#     worst step 0.25 -> 0.18 m).
+#  3. IMU: yaw rate only. Accelerations added nothing on flat ground (identical results)
+#     and, without an IMU orientation, robot_localization 3.5.4 removes gravity using the
+#     filter's roll/pitch, which two_d_mode forces to 0: on sloped orchard rows gravity
+#     would leak into "acceleration" (1 deg = 0.17 m/s^2).
+# Kept from the spec: VIO fused as differential pose. Fusing VIO velocity instead was worse
+# (first row 2.16 m vs 0.21 m horizontal ATE; variants/vio_twist.yaml).
+#
+# Result (first row, VIO healthy): 0.21 m horizontal ATE vs VIO alone 0.38 m and wheel
+# odometry alone 2.08 m. After the VIO is dropped (headland divergence or loss) the filter
+# coasts on wheels + gyro, jump-free.
+ekf_local:
+  ros__parameters:
+    frequency: 50.0
+    sensor_timeout: 0.2
+    two_d_mode: true
+    publish_tf: true
+    print_diagnostics: true
+    map_frame: map
+    odom_frame: odom
+    base_link_frame: base_link
+    world_frame: odom
+
+    # Raw IMU (orientation not measured; orientation_covariance[0] = -1): yaw rate.
+    imu0: /imu/data
+    imu0_config: [false, false, false,  false, false, false,  false, false, false,
+                  false, false, true,  false, false, false]
+    imu0_remove_gravitational_acceleration: true
+    imu0_queue_size: 50
+
+    # Wheel odometry: forward speed, lateral speed (= 0) and yaw rate.
+    odom0: /wheel/odom
+    odom0_config: [false, false, false,  false, false, false,  true, true, false,
+                   false, false, true,  false, false, false]
+    odom0_queue_size: 20
+
+    # VIO pose, fused differentially (spec Decision 1), only while healthy (vio_gate).
+    odom1: /vio/odom_gated
+    odom1_config: [true, true, true,  true, true, true,  false, false, false,
+                   false, false, false,  false, false, false]
+    odom1_differential: true
+    odom1_queue_size: 50
+    # 3-D chi-square 99.99 % ~ 21 (differential pose is fused as a twist).
+    odom1_pose_rejection_threshold: 21.1
+    odom1_twist_rejection_threshold: 21.1

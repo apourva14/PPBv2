@@ -1,0 +1,6 @@
+# Reference variant: wheel odometry + IMU only (VIO input pointed at a topic nobody
+# publishes). The baseline the fused result must beat (spec Task 3: fused drift <= best
+# single source), and what the filter coasts on while VIO is dropped.
+ekf_local:
+  ros__parameters:
+    odom1: /vio/odom_unused

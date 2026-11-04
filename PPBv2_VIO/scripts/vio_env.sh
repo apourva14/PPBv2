@@ -21,6 +21,8 @@ fi
 _vio_had_u=0; case $- in *u*) _vio_had_u=1; set +u ;; esac
 source /opt/ros/humble/setup.bash
 source "$_vio_ws/setup.bash"
+# Fusion layer (robot_localization); independent of the frontend workspace.
+[ -f /opt/vio/localization_ws/install/setup.bash ] && source /opt/vio/localization_ws/install/setup.bash
 if [ -f /ppb_ws/install/setup.bash ]; then
   source /ppb_ws/install/setup.bash
 else
